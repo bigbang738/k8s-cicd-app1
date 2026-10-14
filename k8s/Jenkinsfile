@@ -1,0 +1,68 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_USER = 'bigbang738'
+        IMAGE_NAME     = "bigbang738/k8s-cicd-app"
+        IMAGE_TAG      = "v${BUILD_NUMBER}"
+        K8S_NAMESPACE  = 'cicd-demo'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '=== 소스 코드 Checkout ==='
+                checkout scm
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                echo '=== Docker 이미지 빌드 ==='
+                sh 'docker build -t $IMAGE_NAME:$IMAGE_TAG -t $IMAGE_NAME:latest .'
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+                echo '=== Docker Hub Push ==='
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DH_USER',
+                    passwordVariable: 'DH_PASS'
+                )]) {
+                    sh '''
+                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+                        docker push $IMAGE_NAME:$IMAGE_TAG
+                        docker push $IMAGE_NAME:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to K8s') {
+            steps {
+                echo '=== Kubernetes 배포 ==='
+                sh 'kubectl apply -f k8s/namespace.yaml'
+                sh 'kubectl apply -f k8s/deployment.yaml'
+                sh 'kubectl apply -f k8s/service.yaml'
+                sh 'kubectl set image deployment/web web=$IMAGE_NAME:$IMAGE_TAG -n $K8S_NAMESPACE'
+                sh 'kubectl rollout status deployment/web -n $K8S_NAMESPACE --timeout=120s'
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                echo '=== 배포 검증 ==='
+                sh 'kubectl get pods -n $K8S_NAMESPACE'
+                sh 'kubectl get svc -n $K8S_NAMESPACE'
+            }
+        }
+    }
+
+    post {
+        success { echo '✅ CI/CD Pipeline 성공' }
+        failure { echo '❌ CI/CD Pipeline 실패' }
+        always  { sh 'docker logout || true' }
+    }
+}
